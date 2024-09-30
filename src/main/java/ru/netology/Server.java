@@ -5,10 +5,10 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Logger;
@@ -16,14 +16,16 @@ import java.util.logging.Logger;
 
 public class Server {
     private final int THREADS_NUM = 64;
-
     private final int port;
-    private final List<String> validPaths = List.of("/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css", "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js");
-    private Logger logger;
+    private final Logger logger;
+    private final Map<String, Handler> getHandlers;
+    private final Map<String, Handler> postHandlers;
 
     public Server(int port) {
         this.port = port;
         this.logger = Logger.getLogger("ServerLog");
+        this.getHandlers = new HashMap<>();
+        this.postHandlers = new HashMap<>();
     }
 
     public void run() {
@@ -43,64 +45,68 @@ public class Server {
         }
     }
 
+    public void addHandler(String method, String path, Handler handler) {
+        switch (method) {
+            case "GET":
+                getHandlers.put(path, handler);
+                break;
+            case "POST":
+                postHandlers.put(path, handler);
+                break;
+            default:
+                logger.severe("Method " + method + " is not supported for handlers");
+        }
+    }
+
     private Runnable processConnection(Socket socket) {
         return () -> {
-            try (final var in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                 final var out = new BufferedOutputStream(socket.getOutputStream())) {
-                // read only request line for simplicity
-                // must be in form GET /path HTTP/1.1
+            try (final var in = new BufferedReader(new InputStreamReader(socket.getInputStream())); final var out = new BufferedOutputStream(socket.getOutputStream())) {
+
+                // request line must be in form GET /path HTTP/1.1
                 final var requestLine = in.readLine();
+                logger.info("Request line received: " + requestLine);
                 final var parts = requestLine.split(" ");
-
                 if (parts.length != 3) {
-                    // just close socket
+                    logger.warning("Request line must have 3 parts. Incorrect request line: " + requestLine);
                     return;
                 }
+                final String method = parts[0];
 
-                final var path = parts[1];
-                if (!validPaths.contains(path)) {
-                    out.write((
-                            "HTTP/1.1 404 Not Found\r\n" +
-                                    "Content-Length: 0\r\n" +
-                                    "Connection: close\r\n" +
-                                    "\r\n"
-                    ).getBytes());
-                    out.flush();
-                    return;
+                // process headers
+                final List<String> headers = new ArrayList<>();
+                String line = in.readLine();
+                while (line != null && !line.trim().isEmpty()) {
+                    headers.add(line);
+                    logger.info(line);
+                    line = in.readLine();
                 }
 
-                final var filePath = Path.of(".", "public", path);
-                final var mimeType = Files.probeContentType(filePath);
+                // process body
+                final BufferedReader body = in;
 
-                // special case for classic
-                if (path.equals("/classic.html")) {
-                    final var template = Files.readString(filePath);
-                    final var content = template.replace(
-                            "{time}",
-                            LocalDateTime.now().toString()
-                    ).getBytes();
-                    out.write((
-                            "HTTP/1.1 200 OK\r\n" +
-                                    "Content-Type: " + mimeType + "\r\n" +
-                                    "Content-Length: " + content.length + "\r\n" +
-                                    "Connection: close\r\n" +
-                                    "\r\n"
-                    ).getBytes());
-                    out.write(content);
-                    out.flush();
-                    return;
+                final String path = parts[1];
+                Request request = new Request(method, headers, body);
+
+                switch (method) {
+                    case "GET":
+                        if (getHandlers.containsKey(path)) {
+                            getHandlers.get(path).handle(request, out);
+                            out.flush();
+                        } else {
+                            logger.severe("Unknown path: " + path);
+                        }
+                        break;
+                    case "POST":
+                        if (postHandlers.containsKey(path)) {
+                            postHandlers.get(path).handle(request, out);
+                            out.flush();
+                        } else {
+                            logger.severe("Unknown path: " + path);
+                        }
+                        break;
+                    default:
+                        logger.severe("Method not supported for handlers: " + method);
                 }
-
-                final var length = Files.size(filePath);
-                out.write((
-                        "HTTP/1.1 200 OK\r\n" +
-                                "Content-Type: " + mimeType + "\r\n" +
-                                "Content-Length: " + length + "\r\n" +
-                                "Connection: close\r\n" +
-                                "\r\n"
-                ).getBytes());
-                Files.copy(filePath, out);
-                out.flush();
             } catch (Exception e) {
                 logger.severe("Error while processing tasks: " + e.getMessage());
             }
