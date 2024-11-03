@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
 
 
 public class Server {
@@ -70,22 +71,30 @@ public class Server {
                     logger.warning("Request line must have 3 parts. Incorrect request line: " + requestLine);
                     return;
                 }
+
+                // process method
                 final String method = parts[0];
+
+                // process path
+                String fullPath = parts[1];
+                String path = fullPath.split(Pattern.quote("?"))[0]; // get rid of the query parameters
 
                 // process headers
                 final List<String> headers = new ArrayList<>();
                 String line = in.readLine();
                 while (line != null && !line.trim().isEmpty()) {
                     headers.add(line);
-                    logger.info(line);
+                    //logger.info(line);
                     line = in.readLine();
                 }
 
                 // process body
                 final BufferedReader body = in;
 
-                final String path = parts[1];
-                Request request = new Request(method, headers, body);
+                Request request = new Request(method, fullPath, headers, body);
+                logger.info(request.getQueryParams().toString());
+                logger.info(request.getQueryParam("param1")); // debug
+                logger.info(request.getQueryParam("param2")); // debug
 
                 switch (method) {
                     case "GET":
